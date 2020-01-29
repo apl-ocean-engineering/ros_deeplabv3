@@ -16,7 +16,7 @@ import deepLabv3.classes as classes
 from std_msgs.msg import Header
 from sensor_msgs.msg import Image
 
-from manipulation_context_slam_msgs.msg import DetectionMetaData, SemanticDetectionMat
+from image_detection_msgs.msg import DetectionMetaData, SemanticDetectionMat
 
 
 class DeepLabWrapper:
@@ -27,15 +27,26 @@ class DeepLabWrapper:
         self.cv_image = np.zeros((10, 10, 3), np.uint8)
 
         self.args = self._args
+        if self.args.dataset == 'pascal':
+            self.classes = classes.VOC_classes
+        elif self.args.dataset == 'object':
+            self.classes = classes.ObjectBackground
+
         self.cmap = self._cmap
         self.detector = self._load_detector
+
+
 
         self.md = DetectionMetaData()
         self.md.publishing = False
 
+        # self.image_sub = rospy.Subscriber(
+        #         "/camera/rgb/image_raw",
+        # Image, self.img_callback)
         self.image_sub = rospy.Subscriber(
-                "/camera/rgb/image_raw",
+                "/camera/left/image_raw",
                 Image, self.img_callback)
+
 
         self.metadata_publisher = rospy.Publisher(
             '/detection/metadata', DetectionMetaData, queue_size=10)
@@ -45,7 +56,10 @@ class DeepLabWrapper:
     def img_callback(self, img):
         #print("here")
         try:
-            self.cv_image = self.bridge.imgmsg_to_cv2(img, "bayer_grbg8")
+            if img.encoding == "mono8":
+                self.cv_image = self.bridge.imgmsg_to_cv2(img, "mono8")
+            else:
+                self.cv_image = self.bridge.imgmsg_to_cv2(img, "bayer_grbg8")
         except CvBridgeError as e:
             print(e)
 
@@ -66,7 +80,7 @@ class DeepLabWrapper:
         if self.args.saved_model == " ":
             print("No model specified")
             exit()
-        model, model_fname = load_model(self.args, classes.VOC_classes)
+        model, model_fname = load_model(self.args, self.classes)
         torch.cuda.set_device(self.args.gpu)
         model = model.cuda()
         model.eval()
@@ -92,9 +106,16 @@ class DeepLabWrapper:
 
     def run(self):
         loop_rate = rospy.Rate(30)
-        for i, val in enumerate(classes.VOC_classes):
+        for i, val in enumerate(self.classes):
             self.md.classes.append(val)
+        count = 0
+        for i in range(len(self.classes)):
+            for j in range(3):
+                self.md.rgb_color_map.append(self.cmap[count])
+                count+=1
         self.md.class_nums = i + 1
+
+
 
         while not rospy.is_shutdown():
             #print('here')
@@ -106,6 +127,8 @@ class DeepLabWrapper:
             self.md.header = header
             self.md.header.stamp = rospy.get_rostime()
             if self.cv_image.shape[0] > 60 and self.cv_image.shape[1] > 60:
+                if self.cv_image.shape[0] > 513:
+                    self.cv_image = cv2.resize(self.cv_image, (513, 513))
                 color = cv2.cvtColor(self.cv_image, cv2.COLOR_GRAY2RGB)
 
                 img = cv_image_to_tensor(color)
@@ -126,8 +149,9 @@ class DeepLabWrapper:
                         "output", create_color_cv_image(pred, self.cmap))
                     cv2.waitKey(1)
 
+                #print(self.md)
                 self.semantic_publisher.publish(semantic_detection_mat)
-                print("time elapsed", time.time() - prev_time)
+                #print("time elapsed", time.time() - prev_time)
 
             self.metadata_publisher.publish(self.md)
 
